@@ -1,5 +1,5 @@
 AC_PREREQ(2.57)
-AC_INIT(xrootd-alicetokenacc, 1.2.5,[andreas.joachim.peters@cern.ch])
+AC_INIT(xrootd-alicetokenacc, 1.3.0,[andreas.joachim.peters@cern.ch])
 AC_CONFIG_SRCDIR([XrdAliceTokenAcc.cc])
 
 AC_CANONICAL_TARGET
@@ -48,7 +48,7 @@ AC_SUBST(MARK64)
 AC_ARG_WITH(xrootd-location,
           [  --with-xrootd-location=installation of xrootd version to use],
           [XROOTD_LOCATION=$withval],
-          [XROOTD_LOCATION=/opt/xrootd])
+          [XROOTD_LOCATION=/usr/])
 
 AC_SUBST(XROOTD_LOCATION)
 
@@ -63,21 +63,21 @@ AC_SUBST(OPENSSL_INCDIR)
 AC_ARG_WITH(openssl-libdir,
           [  --with-openssl-libdir=installation of ssl library],
           [OPENSSL_LIBDIR=$withval],
-          [OPENSSL_LIBDIR=/usr/lib$MARK64/])
+          [OPENSSL_LIBDIR=/usr/lib64/])
 
 AC_SUBST(OPENSSL_LIBDIR)
 
 AC_ARG_WITH(tkauthz-incdir,
           [  --with-tkauthz-incdir=installation of TTokenAuthz.h file],
           [TKAUTHZ_INCDIR=$withval],
-          [TKAUTHZ_INCDIR=/opt/alien/api/include])
+          [TKAUTHZ_INCDIR=/usr/include])
 
 AC_SUBST(TKAUTHZ_INCDIR)
 
 AC_ARG_WITH(tkauthz-libdir,
           [  --with-tkauthz-libdir=installation of libTokenAuthz.so library],
           [TKAUTHZ_LIBDIR=$withval],
-          [TKAUTHZ_LIBDIR=/opt/alien/api/lib/])
+          [TKAUTHZ_LIBDIR=/usr/lib64/])
 
 AC_SUBST(TKAUTHZ_LIBDIR)
 

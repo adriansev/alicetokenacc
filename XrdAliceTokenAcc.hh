@@ -71,6 +71,7 @@ public:
   bool                MatchWildcard(const char* host); 
 
   static  XrdSysMutex*              CryptoMutexPool[128];
+  EVP_PKEY*           ReadPublicKey(const char* certfile);
 
 private:
   XrdSysMutex                       ErrnoMutex;
@@ -78,6 +79,8 @@ private:
   static XrdOucHash<XrdOucString> * NoAuthorizationHosts;
   static XrdOucTList              * NoAuthorizationHostWildcards;
   static XrdOucString               TruncatePrefix;
+  static EVP_PKEY*                  EVP_RemotePublicKey;
+  char*                             unbase64(unsigned char *input, int length);
 };
 
 #endif

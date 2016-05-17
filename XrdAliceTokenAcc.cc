@@ -7,6 +7,13 @@
 #include "XrdOuc/XrdOucString.hh"
 #include "XrdOuc/XrdOucStream.hh"
 
+#include <openssl/x509.h>
+#include <openssl/pem.h>
+#include <openssl/hmac.h>
+#include <openssl/bio.h>
+#include <openssl/buffer.h>
+
+#include <openssl/evp.h>
 #include <openssl/objects.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -24,6 +31,7 @@
 #include <netinet/in.h>
 
 #include "XrdVersion.hh"
+XrdVERSIONINFO(XrdAccAuthorizeObject,"AliceTokenAcc");
 
 XrdSysError TkEroute(0,"AliceTokenAcc");
 XrdOucTrace TkTrace(&TkEroute);
@@ -34,6 +42,7 @@ XrdOucHash<XrdOucString>*  XrdAliceTokenAcc::NoAuthorizationHosts;
 XrdOucTList*               XrdAliceTokenAcc::NoAuthorizationHostWildcards;
 XrdOucString               XrdAliceTokenAcc::TruncatePrefix="";
 XrdSysMutex*               XrdAliceTokenAcc::CryptoMutexPool[128];
+EVP_PKEY*                  XrdAliceTokenAcc::EVP_RemotePublicKey;
 #define IS_SLASH(s) (s == '/')
 
 
@@ -199,228 +208,388 @@ XrdAliceTokenAcc::Access(const XrdSecEntity    *client,
     return XrdAccPriv_All;
   }
 
-  // see if we have to erase some prefix
-  if (TruncatePrefix.length()) {
-    UnprefixedPath=path;
-    UnprefixedPath.replace(TruncatePrefix.c_str(),"");
-    if (!UnprefixedPath.beginswith('/')) {
-      UnprefixedPath.insert('/',0);
+  if ( env["signature"].length() > 0 ) {
+
+    // set the opening mode
+    std::string authzopenmode="";
+
+    switch(oper) { 
+    case AOP_Create :
+    case AOP_Update:
+      authzopenmode="write";
+      break;
+    case AOP_Delete:
+      authzopenmode="delete";
+      break;
+    case AOP_Read :
+      authzopenmode="read";
+      break; 
+    case AOP_Stat :
+      return XrdAccPriv_Lookup;
+    case AOP_Readdir :
+      return XrdAccPriv_Readdir;
+    default:
+      return XrdAccPriv_None;
     }
-    path = UnprefixedPath.c_str();
-  }
-  
-  std::string vo="*";
-  
-  // if we have the vo defined in the credentials, use this one
-  if (client) {
-    if ((client->vorg) && (strlen(client->vorg)))
-      vo = client->vorg;
-  }
-  
-  // set the certificate, if we have one
-  const char* certsubject=0;
-  if (client) {
-    if ((client->name) && (strlen(client->name))) {
-      certsubject = client->name;
+    
+    
+    if ( env["hashord"].length() > 0) { 
+      // ok!
+    } else {
+      // no priviledges at all!
+      fprintf(stderr, "invalid hashorder\n");
+      return XrdAccPriv_None;
     }
-  }
-  
-  TTokenAuthz* tkauthz = 0;
-  debug = false;
-  struct stat buf;
-  if (!stat("/tmp/XrdAliceTokenDebug",&buf)) {
-    debug = true;
+    
+
+    if (debug) {
+      TkTrace.Beg("Access");
+      cerr <<"Hashorder "<< env["hashord"].c_str();
+      TkTrace.End();
+    }
+
+    std::string verify= "";
+    std::map<std::string,std::string> keys;
+    
+    std::string str=env["hashord"].c_str();
+    std::string delimiters = "-";
+    
+    // Skip delimiters at beginning.
+    std::string::size_type lastPos = str.find_first_not_of(delimiters, 0);
+    // Find first "non-delimiter".
+    std::string::size_type pos     = str.find_first_of(delimiters, lastPos);
+    
+    while (std::string::npos != pos || std::string::npos != lastPos) {
+      // Found a token, add it to the map.
+      std::string tokenstring = str.substr(lastPos, pos - lastPos);
+      
+      verify += ( tokenstring + "=" + env[tokenstring] + "&");
+      
+      // Skip delimiters.  Note the "not_of"
+      lastPos = str.find_first_not_of(delimiters, pos);
+      // Find next "non-delimiter"
+      pos = str.find_first_of(delimiters, lastPos);
+    }
+    
+    if (verify.length()) verify.erase(verify.length()-1,1);	
+    
+    if (debug) {
+      TkTrace.Beg("Access");
+      fprintf (stderr, "sign string: %s, signature %s ", verify.c_str(), env["signature"].c_str());
+      TkTrace.End();
+    }
+    
+    const char* remotepublickey= "/home/ali/.authz/xrootd/pubkey.pem";
+    std::string fRemotePublicKey  = std::string(remotepublickey);
+    
+    EVP_PKEY*  fEVP_RemotePublicKey  = ReadPublicKey(fRemotePublicKey.c_str());
+    
+    // build the sha384 hash
+    uint_fast8_t hash[48];
+    
+#ifdef SHA384_DIGEST_LENGTH
+    // just to make it compile, certainly won't work without sha384
+    if (!SHA384( (uint_fast8_t*)verify.c_str(), (uint32_t)verify.length(), hash) ) {
+#else
+    if (!SHA1( (uint_fast8_t*)verify.c_str(), (uint32_t)verify.length(), hash) ) {
+#endif
+      fprintf(stderr,"Cannot build the sha2 hash sum!\n");
+      return XrdAccPriv_None;
+    }
+    
+    if (debug) {
+      TkTrace.Beg("Access");
+      fprintf(stdout,"\nsignature found, length, printout: %u, %s \n", (int)env["signature"].length(), env["signature"].c_str()); 
+      TkTrace.End();
+    }
+    
+    char* decsignature = (char*) unbase64((unsigned char*) env["signature"].c_str(), env["signature"].length());
+    
+    if (debug) {
+      TkTrace.Beg("Access");
+      fprintf(stdout,"decoded signature, length, printout: %d, %s\n" , (int)sizeof(decsignature), decsignature);
+      TkTrace.End();
+    } 
+    
+    // verify the signature of the envelope (sha384 brings up 
+    int siglen = EVP_PKEY_size(fEVP_RemotePublicKey);
+    
+#ifdef SHA384_DIGEST_LENGTH
+    int32_t verified = RSA_verify(NID_sha384, hash, 48,
+				  (unsigned char*) decsignature, siglen, fEVP_RemotePublicKey->pkey.rsa);
+#else
+    int32_t verified = RSA_verify(NID_sha1, hash, 48,
+				  (unsigned char*) decsignature, siglen, fEVP_RemotePublicKey->pkey.rsa);
+#endif
+    
+    
+    if (decsignature)
+      free(decsignature); 
+    
+    if (verified != 1) {
+      fprintf(stderr,"ERROR: The signature couldn't been verified![%d]!\n",verified);
+      return XrdAccPriv_None;
+    }
+    
+    
+    time_t ex_time = atoi(env["expires"].c_str());
+    char eex_time[4096];
+    sprintf(eex_time,"%lu",ex_time);
+    if (strcmp(env["expires"].c_str(),eex_time)) {
+      fprintf(stderr,"Envelope Timestamp is illegal: |%s|%s|!\n",env["expires"].c_str(),eex_time);
+      return XrdAccPriv_None;
+    }
+    
+    time_t tdiff = (time(NULL)- ex_time);
+    if ( (tdiff > 0) && (ex_time !=0) ) {
+      fprintf(stderr,"Envelope has expired since %lu secondes!\n", tdiff);
+      return XrdAccPriv_None;
+    }
+    
+    // size, md5
+    
+    if (strcmp(env["access"].c_str(),authzopenmode.c_str())) {
+      fprintf(stderr,"The specified access mode is not granted in the signed Envelope [%s != %s] .\n", env["access"].c_str(),authzopenmode.c_str());
+      return XrdAccPriv_None;
+    }
+    
+    XrdOucString cpath=env["turl"].c_str();
+    int dspos = cpath.rfind("//"); 
+    if (dspos != STR_NPOS) {
+      cpath.erase(0,dspos+1);
+    } 
+    
+    if (strcmp(cpath.c_str(),path)) {
+      fprintf(stderr,"The specified path is not granted in the signed Envelope [%s != %s] .\n", cpath.c_str(), path);
+      return XrdAccPriv_None;
+    }
+       
+    if (debug) {
+      TkTrace.Beg("Access");
+      fprintf(stdout,"Signature verified. All fine!\n");
+      TkTrace.End();
+    }  
+    // 
+    return XrdAccPriv_All;
   } else {
-    debug = false;
-  }
-  
-  if (debug) {
-    tkauthz = TTokenAuthz::GetTokenAuthz("xrootd",true); // with debug output
-  } else {
-    tkauthz = TTokenAuthz::GetTokenAuthz("xrootd",false);// no debug output
-  }
-  
-  
-  // set the opening mode
-  std::string authzopenmode="";
-  
-  switch(oper) {
-  case AOP_Create :
-  case AOP_Update:
-    authzopenmode="write-once";
-    break;
-  case AOP_Delete :
-    break;
-  case AOP_Read :
-    authzopenmode="read";
-    break;
-  case AOP_Stat :
-    return XrdAccPriv_Lookup;
-  case AOP_Readdir :
-    return XrdAccPriv_Readdir;
-  default:
-    return XrdAccPriv_None;
-  }
-  
-  // allow the quick route ... e.g. check if we can grant an operation without decoding the envelope
-  
-  // check if the directory asked is exported
-  if (tkauthz->PathIsExported(path,vo.c_str(),certsubject)) {
-    // check the host
+    // see if we have to erase some prefix
+    if (TruncatePrefix.length()) {
+      UnprefixedPath=path;
+      UnprefixedPath.replace(TruncatePrefix.c_str(),"");
+      if (!UnprefixedPath.beginswith('/')) {
+	UnprefixedPath.insert('/',0);
+      }
+      path = UnprefixedPath.c_str();
+    }
+    
+    std::string vo="*";
+    
+    // if we have the vo defined in the credentials, use this one
     if (client) {
-      if (client->host) {
-	// if this is a authorization free host, allow it!
-	if (NoAuthorizationHosts->Find(client->host)) {
-	  return XrdAccPriv_All;
-	}
-	if (MatchWildcard(client->host)) 
-	  return XrdAccPriv_All;
-      }
-    }   
-    if (!tkauthz->PathHasAuthz(path,authzopenmode.c_str(),vo.c_str(),certsubject)) {
-      // the pass through
-      return XrdAccPriv_All;
-    } else {
-      if ( ((env["authz"].length()) == 0 ) || (env["authz"] == "alien") || (env["authz"] == "alien?")) {
-	// path needs authorization
-	TkEroute.Emsg("Access",EACCES,"give access for lfn - path has to be authorized",path);
-	return XrdAccPriv_None;
-      }
-    }
-  } else {
-    // path is not exported for this VO
-    TkEroute.Emsg("Access",EACCES,"give access for lfn - path not exported",path);
-    return XrdAccPriv_None;
-  }
-  
-  int garesult=0;
-  float t1,t2;
-  
-  garesult = tkauthz->GetAuthz(path,opaque,&authz,debug,&t1,&t2);
-  
-  // mantain ALICE symlinks
-  if ( getenv("ALICE_TOKEN_SYMLINKS") ) {
-    char localpath[16384];
-    if (getenv("ALICE_TOKEN_SYMLINKS_LOCALROOT")) {
-      snprintf(localpath, sizeof(localpath),"%s/%s", getenv("ALICE_TOKEN_SYMLINKS_LOCALROOT"),path);
-    } else {
-      snprintf(localpath, sizeof(localpath),"%s", path);
+      if ((client->vorg) && (strlen(client->vorg)))
+	vo = client->vorg;
     }
     
-    XrdOucString linkname = getenv("ALICE_TOKEN_SYMLINKS");
-    XrdOucString linktarget=localpath;
-    XrdOucString linkpointer = "";
-    linkname += "/"; linkname += authz->GetKey(path,"lfn");
+    // set the certificate, if we have one
+    const char* certsubject=0;
+    if (client) {
+      if ((client->name) && (strlen(client->name))) {
+	certsubject = client->name;
+      }
+    }
+    
+    TTokenAuthz* tkauthz = 0;
+    debug = false;
     struct stat buf;
-    if (!stat(linkname.c_str(), &buf)) {
-      char linkdestination[4096];
-      if ( (readlink (linkname.c_str(), linkdestination, sizeof(linkdestination))) > 0) {
-	linkpointer = linkdestination;
-      }
+    if (!stat("/tmp/XrdAliceTokenDebug",&buf)) {
+      debug = true;
+    } else {
+      debug = false;
     }
     
-    if (linktarget != linkpointer) {
-      int rc = unlink(linkname.c_str());
-      if (rc) rc = 0;
-      // link does not point properly
-      int pos=0;
-      int retc=0;
-      XrdOucString newpath = linkname.c_str();
-      while(newpath.replace("//","/")) {};
-      int rpos=STR_NPOS;
-      while ((rpos = newpath.rfind("/",rpos))!=STR_NPOS) {
-	XrdOucString existspath;
-	existspath.assign(newpath,0,rpos);
-	
-	if (!stat(existspath.c_str(), &buf)) {
-	  // this exists, now creat until the end
-	  int fpos= rpos+2;
-	  while ( (fpos = newpath.find("/",fpos)) != STR_NPOS ) {
-	    XrdOucString createpath;
-	    createpath.assign(newpath,0,fpos);
-	    mkdir(createpath.c_str(),S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
-	    fpos++;
-	  }
-	  break;
-	}
-	rpos--;
-      }
-      // create a link
-      retc = symlink(linktarget.c_str(),linkname.c_str());
-      if (retc) retc=0;
+    if (debug) {
+      tkauthz = TTokenAuthz::GetTokenAuthz("xrootd",true); // with debug output
+    } else {
+      tkauthz = TTokenAuthz::GetTokenAuthz("xrootd",false);// no debug output
     }
-  }
-  
-  if (debug) {
-    TkTrace.Beg("Access");
-    cerr <<"Time for Authz decoding: " << t1 << " ms" << " / " << t2 << "ms =>" << path ;
-    TkTrace.End();
-  }
-  
-  if (garesult != TTokenAuthz::kAuthzOK) {
-    // if the authorization decoding failed for any reason
-    TkEroute.Emsg("Access",tkauthz->PosixError(garesult),tkauthz->ErrorMsg(garesult) , path);
-    if (authz) delete authz;
-    return XrdAccPriv_None;
-  }
-  
-  // check the access permissions
-  if (oper == AOP_Read) {
-    // check that we have the READ access
-    if (strcmp(authz->GetKey((char*)path,"access"), "read")) {
-      // we have no read access
-      TkEroute.Emsg("Access",EACCES,"have read access for lfn" , path);
+    
+    
+    // set the opening mode
+    std::string authzopenmode="";
+    
+    switch(oper) {
+    case AOP_Create :
+    case AOP_Update:
+      authzopenmode="write-once";
+      break;
+    case AOP_Delete :
+      break;
+    case AOP_Read :
+      authzopenmode="read";
+      break;
+    case AOP_Stat :
+      return XrdAccPriv_Lookup;
+    case AOP_Readdir :
+      return XrdAccPriv_Readdir;
+    default:
+      return XrdAccPriv_None;
+    }
+    
+    // allow the quick route ... e.g. check if we can grant an operation without decoding the envelope
+    
+    // check if the directory asked is exported
+    if (tkauthz->PathIsExported(path,vo.c_str(),certsubject)) {
+      // check the host
+      if (client) {
+	if (client->host) {
+	  // if this is a authorization free host, allow it!
+	  if (NoAuthorizationHosts->Find(client->host)) {
+	    return XrdAccPriv_All;
+	  }
+	  if (MatchWildcard(client->host)) 
+	    return XrdAccPriv_All;
+	}
+      }   
+      if (!tkauthz->PathHasAuthz(path,authzopenmode.c_str(),vo.c_str(),certsubject)) {
+	// the pass through
+	return XrdAccPriv_All;
+      } else {
+	if ( ((env["authz"].length()) == 0 ) || (env["authz"] == "alien") || (env["authz"] == "alien?")) {
+	  // path needs authorization
+	  TkEroute.Emsg("Access",EACCES,"give access for lfn - path has to be authorized",path);
+	  return XrdAccPriv_None;
+	}
+      }
+    } else {
+      // path is not exported for this VO
+      TkEroute.Emsg("Access",EACCES,"give access for lfn - path not exported",path);
+      return XrdAccPriv_None;
+    }
+    
+    int garesult=0;
+    float t1,t2;
+    
+    garesult = tkauthz->GetAuthz(path,opaque,&authz,debug,&t1,&t2);
+
+    // mantain ALICE symlinks
+    if ( getenv("ALICE_TOKEN_SYMLINKS") ) {
+      char localpath[16384];
+      //      XrdOfsOss->GenLocalPath(path, localpath);
+      XrdOucString linkname = getenv("ALICE_TOKEN_SYMLINKS");
+      XrdOucString linktarget=localpath;
+      XrdOucString linkpointer = "";
+      linkname += "/"; linkname += authz->GetKey(path,"lfn");
+      struct stat buf;
+      if (!stat(linkname.c_str(), &buf)) {
+        char linkdestination[4096];
+        if ( (readlink (linkname.c_str(), linkdestination, sizeof(linkdestination))) > 0) {
+          linkpointer = linkdestination;
+        }
+      }
+
+      if (linktarget != linkpointer) {
+        int rc = unlink(linkname.c_str());
+        if (rc) rc = 0;
+        // link does not point properly
+        int pos=0;
+        int retc=0;
+        XrdOucString newpath = linkname.c_str();
+        while(newpath.replace("//","/")) {};
+        int rpos=STR_NPOS;
+        while ((rpos = newpath.rfind("/",rpos))!=STR_NPOS) {
+          XrdOucString existspath;
+          existspath.assign(newpath,0,rpos);
+
+          if (!stat(existspath.c_str(), &buf)) {
+            // this exists, now creat until the end
+            int fpos= rpos+2;
+            while ( (fpos = newpath.find("/",fpos)) != STR_NPOS ) {
+              XrdOucString createpath;
+              createpath.assign(newpath,0,fpos);
+              mkdir(createpath.c_str(),S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+              fpos++;
+            }
+            break;
+          }
+          rpos--;
+        }
+        // create a link
+        retc = symlink(linktarget.c_str(),linkname.c_str());
+        if (retc) retc=0;
+      }
+    }
+
+    if (debug) {
+      TkTrace.Beg("Access");
+      cerr <<"Time for Authz decoding: " << t1 << " ms" << " / " << t2 << "ms =>" << path ;
+      TkTrace.End();
+    }
+    
+    if (garesult != TTokenAuthz::kAuthzOK) {
+      // if the authorization decoding failed for any reason
+      TkEroute.Emsg("Access",tkauthz->PosixError(garesult),tkauthz->ErrorMsg(garesult) , path);
       if (authz) delete authz;
       return XrdAccPriv_None;
     }
-  } else {
-    if ( (oper == AOP_Create) || (oper == AOP_Stat) || (oper == AOP_Update) ) {
-      // check that we have the WRITE access
-      if (strcmp(authz->GetKey((char*)path,"access"), "write-once")) {
-	// we have no write-once access
-	TkEroute.Emsg("Access",EACCES,"have write access for lfn" , path);
+    
+    // check the access permissions
+    if (oper == AOP_Read) {
+      // check that we have the READ access
+      if (strcmp(authz->GetKey((char*)path,"access"), "read")) {
+	// we have no read access
+	TkEroute.Emsg("Access",EACCES,"have read access for lfn" , path);
 	if (authz) delete authz;
 	return XrdAccPriv_None;
       }
     } else {
-      if ( (oper == AOP_Delete) ) {
-	// check that we have the READ-WRITE access
-	if (strcmp(authz->GetKey((char*)path,"access"), "delete")) {
-	  // we have no deletion access
-	  TkEroute.Emsg("Access", EACCES, "have delete access for lfn", path);
+      if ( (oper == AOP_Create) || (oper == AOP_Stat) || (oper == AOP_Update) ) {
+	// check that we have the WRITE access
+	if (strcmp(authz->GetKey((char*)path,"access"), "write-once")) {
+	  // we have no write-once access
+	  TkEroute.Emsg("Access",EACCES,"have write access for lfn" , path);
 	  if (authz) delete authz;
-	    return XrdAccPriv_None;
+	  return XrdAccPriv_None;
 	}
       } else {
-	TkEroute.Emsg("Access", EACCES, "have access for lfn", path);
-	if (authz) delete authz;
-	return XrdAccPriv_None;
-      }
-    }  
-  }
-  
-  // get the turl
-  const char* newfilename = TTokenAuthz::GetPath(authz->GetKey((char*)path,"turl"));
-  std::string copyfilename = newfilename;
-  
-  // check if the asked filename is exported
-  if (!tkauthz->PathIsExported(newfilename,vo.c_str())) {
-    // path is not exported for this VO
-    TkEroute.Emsg("Acess", EACCES, "give access for turl - path not exported", newfilename);
+	if ( (oper == AOP_Delete) ) {
+	  // check that we have the READ-WRITE access
+	  if (strcmp(authz->GetKey((char*)path,"access"), "delete")) {
+	    // we have no deletion access
+	    TkEroute.Emsg("Access", EACCES, "have delete access for lfn", path);
+	    if (authz) delete authz;
+	    return XrdAccPriv_None;
+	  }
+	} else {
+	  TkEroute.Emsg("Access", EACCES, "have access for lfn", path);
+	  if (authz) delete authz;
+	  return XrdAccPriv_None;
+	}
+      }  
+    }
+    
+    // get the turl
+    const char* newfilename = TTokenAuthz::GetPath(authz->GetKey((char*)path,"turl"));
+    std::string copyfilename = newfilename;
+    
+    // check if the asked filename is exported
+    if (!tkauthz->PathIsExported(newfilename,vo.c_str())) {
+      // path is not exported for this VO
+      TkEroute.Emsg("Acess", EACCES, "give access for turl - path not exported", newfilename);
       if (authz) delete authz;
       return XrdAccPriv_None;
-  }
-  
-  // do certifcate check, if it is required
-  if (tkauthz->CertNeedsMatch(newfilename,vo.c_str())) {
-    if (certsubject != authz->GetKey((char*)path,"certsubject")) {
-      TkEroute.Emsg("Access", EACCES, "give access for turl - certificate subject does not match", newfilename);
-      return XrdAccPriv_None;
     }
+    
+    // do certifcate check, if it is required
+    if (tkauthz->CertNeedsMatch(newfilename,vo.c_str())) {
+      if (certsubject != authz->GetKey((char*)path,"certsubject")) {
+	TkEroute.Emsg("Access", EACCES, "give access for turl - certificate subject does not match", newfilename);
+	return XrdAccPriv_None;
+      }
+    }
+    
+    if (authz)delete authz;
+    return XrdAccPriv_All;
   }
-  
-  if (authz)delete authz;
-  return XrdAccPriv_All;
 }
 
 bool
@@ -528,6 +697,41 @@ XrdAliceTokenAcc::Init() {
     }
   }
   
+  EVP_RemotePublicKey = 0;
+
+  if (authorizationfile.length()) {
+    char buffer[1025];
+    std::ifstream authzfile(authorizationfile.c_str());
+    
+    while (authzfile.getline(buffer,sizeof(buffer))) {
+      int length=strlen(buffer);
+      // ignore comments
+      if (buffer[0] == '#')
+	continue;
+      if (length == 0)
+	continue;
+      
+      XrdOucString pubkey = buffer;
+      
+      if (pubkey.beginswith("PUBKEY:")) {
+	size_t i=0;
+	for (i=0; i < length; i++) {
+	  if ( (buffer[i] == ' ') || (buffer[i] == '\t') || (buffer[i] == '\n') || (buffer[i] == 0) ) 
+	    break;
+	}
+	  pubkey.erase(i);
+      }
+      
+      fprintf(stdout, "=====> XrdAliceTokenAcc: Public key in use is %s\n", pubkey.c_str());
+      EVP_RemotePublicKey  = ReadPublicKey(pubkey.c_str());
+      if (!EVP_RemotePublicKey) {
+	fprintf(stdout, "=====> XrdAliceTokenAcc: Cannot load public key !\n");
+      }
+    }
+  } else {
+    fprintf(stdout, "=====> XrdAliceTokenAcc: no public key - will not verify response envelopes\n");
+  }
+  
   debug=false;
   return true;
 }
@@ -546,8 +750,7 @@ extern "C" XrdAccAuthorize *XrdAccAuthorizeObject(XrdSysLogger *lp,
                                               const char   *cfn,
                                               const char   *parm) 
 {
-  // TkEroute.SetPrefix("XrdAliceTokenAcc::");
-  TkEroute.SetPrefix("XrdAliceTokenAcc_");
+  TkEroute.SetPrefix("XrdAliceTokenAcc::");
   TkEroute.logger(lp);
   TkEroute.Say("++++++ (c) 2008 CERN/IT-DM-SMD ",
 	       "AliceTokenAcc (Alice Token Access Authorization) v 1.0");
@@ -567,5 +770,65 @@ extern "C" XrdAccAuthorize *XrdAccAuthorizeObject(XrdSysLogger *lp,
   }
 }
 
-XrdVERSIONINFO( XrdAccAuthorizeObject, XrdAliceTokenAcc );
+
+
+
+
+
+EVP_PKEY*
+XrdAliceTokenAcc::ReadPublicKey(const char* certfile) {
+  FILE *fp = fopen (certfile, "r");
+  X509 *x509;
+  EVP_PKEY *pkey;
+
+  if (!fp) {
+     return NULL;
+  }
+
+  x509 = PEM_read_X509(fp, NULL, 0, NULL);
+
+  if (x509 == NULL)
+  {
+     ERR_print_errors_fp (stderr);
+     return NULL;
+  }
+
+  fclose (fp);
+
+  pkey=X509_extract_key(x509);
+
+  X509_free(x509);
+
+  if (pkey == NULL)
+     ERR_print_errors_fp (stderr);
+
+  return pkey;
+
+}
+
+
+char *XrdAliceTokenAcc::unbase64(unsigned char *input, int length) {
+    BIO *b64, *bmem;
+    
+    char *buffer = (char *)malloc(length);
+    memset(buffer, 0, length);
+    
+    fprintf (stderr,"unbase64ing: %s, %d\n", input, length);
+    
+    b64 = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64, BIO_FLAGS_BASE64_NO_NL);
+    bmem = BIO_new_mem_buf(input, length);
+    bmem = BIO_push(b64, bmem);
+    
+    BIO_read(bmem, buffer, length);
+    
+    BIO_free_all(bmem);
+    
+    fprintf (stderr,"unbase64ed: %s\n", buffer);
+    
+    return buffer;
+}
+
+
+
 
