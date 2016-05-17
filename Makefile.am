@@ -6,13 +6,15 @@
 ## Checked in by $Author: apeters $
 #######################################################################
 
+ACLOCAL_AMFLAGS = -I m4
+
 lib_LTLIBRARIES = libXrdAliceTokenAcc.la
 
-INCLUDES = -I$(XROOTD_LOCATION)/include/xrootd -I$(OPENSSL_INCDIR) -I$(TKAUTHZ_INCDIR)
+AM_CPPFLAGS = -I$(XROOTD_LOCATION)/include/xrootd -I$(OPENSSL_INCDIR) -I$(TKAUTHZ_INCDIR)
 
 libXrdAliceTokenAcc_la_SOURCES = XrdAliceTokenAcc.cc XrdAliceTokenAcc.hh
 
-libXrdAliceTokenAcc_la_LIBADD = -L$(XROOTD_LOCATION)/lib$(MARK64)/  -lXrdUtils -lXrdServer -L$(OPENSSL_LIBDIR)/ -lcrypto -L$(TKAUTHZ_LIBDIR)/ -lTokenAuthz
+libXrdAliceTokenAcc_la_LIBADD = -L$(XROOTD_LOCATION)/lib$(MARK64)/ -lXrdUtils -lXrdServer -L$(OPENSSL_LIBDIR)/ -lcrypto -L$(TKAUTHZ_LIBDIR)/ -lTokenAuthz
 
 EXTRA_DIST = configure.ac configure bootstrap.sh xrootd-alicetokenacc.spec .authz
 
