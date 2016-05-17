@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 libtoolize --copy --force
 aclocal
 automake -acf
