@@ -1,3 +1,6 @@
+upstream link :
+https://github.com/cern-eos/xrootd-alicetokenacc
+
 =======================================================================================================
 This is a standard xrootd Acc library plugin.
 
