@@ -32,7 +32,7 @@ An authorization plugin for xrootd using the Alice Token authorization envelope.
 ./bootstrap.sh
 
 %build
-./configure --prefix=/usr --libdir=/usr/lib64 --includedir=/usr/include
+./configure --prefix=%{_prefix} --libdir=%{_libdir} --includedir=%{_includedir}
 make
 make install DESTDIR=$RPM_BUILD_ROOT
 mkdir -p $RPM_BUILD_ROOT/etc/grid-security/xrootd/
