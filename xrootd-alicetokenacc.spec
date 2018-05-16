@@ -29,6 +29,7 @@ An authorization plugin for xrootd using the Alice Token authorization envelope.
 
 %prep
 %setup -q
+./bootstrap.sh
 
 %build
 ./configure --prefix=/usr --libdir=/usr/lib64 --includedir=/usr/include
