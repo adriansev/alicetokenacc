@@ -1,0 +1,17 @@
+#!/bin/bash
+
+[[ -z "$1" ]] && echo "The version argument is needed" && exit 1
+
+VER=$1
+
+DIR="xrootd-alicetokenacc-"${VER}
+
+rm -rf ${DIR}.tar.gz ${DIR}
+
+mkdir ${DIR}
+rsync --exclude '.git' --exclude "${DIR}"  -ahuHAXW ./ ${DIR}/
+
+tar czf ${DIR}.tar.gz ${DIR}
+
+rm -rf ${DIR}
+

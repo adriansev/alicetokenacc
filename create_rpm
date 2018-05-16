@@ -1,0 +1,15 @@
+#!/bin/bash
+
+VER=$1
+
+./create_targz ${VER}
+rez=$?
+[[ ${rez} == 1 ]] && { echo "Could not create targz"; exit 1;}
+
+rpmdev-setuptree
+
+cp -f xrootd-alicetokenacc-${VER}.tar.gz $HOME/rpmbuild/SOURCES/
+cp -f xrootd-alicetokenacc.spec $HOME/rpmbuild/SPECS
+
+rpmbuild -ba xrootd-alicetokenacc.spec
+
