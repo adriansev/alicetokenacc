@@ -1,17 +1,22 @@
 #!/bin/bash
 
-[[ -z "$1" ]] && echo "The version argument is needed" && exit 1
+[[ -z "$1" ]] && { echo "The version argument is needed"; exit 1;}
 
+PKGNAME="xrootd-alicetokenacc"
 VER=$1
 
-DIR="xrootd-alicetokenacc-"${VER}
+PKG="${PKGNAME}-${VER}"
+TARGZ="${PKG}.tar.gz"
+DIR="${HOME}/tmp"
+CURDIR="$(pwd)"
 
-rm -rf ${DIR}.tar.gz ${DIR}
+rm -rf ${DIR}/${PKG}
 
-mkdir ${DIR}
-rsync --exclude '.git' --exclude "${DIR}"  -ahuHAXW ./ ${DIR}/
+mkdir ${DIR}/${PKG}
+rsync -rlptW --exclude '.git' --exclude "*.spec" --exclude "*.tar.gz" --exclude "create_*" --exclude ".gitlab*.yml" -ahuHAXW ${PWD}/ ${DIR}/${PKG}/
 
-tar czf ${DIR}.tar.gz ${DIR}
+cd ${DIR}
+tar -czf ${TARGZ} ./${PKG}
+mv ${TARGZ} ${CURDIR}/
 
-rm -rf ${DIR}
-
+rm -rf ${DIR}/${TARGZ} ${DIR}/${PKG}

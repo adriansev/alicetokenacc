@@ -1,6 +1,7 @@
 #!/bin/bash
 
 VER=$1
+REL=$2
 
 ./create_targz ${VER}
 rez=$?
@@ -8,8 +9,13 @@ rez=$?
 
 rpmdev-setuptree
 
-cp -f xrootd-alicetokenacc-${VER}.tar.gz $HOME/rpmbuild/SOURCES/
-cp -f xrootd-alicetokenacc.spec $HOME/rpmbuild/SPECS
+mv -f xrootd-alicetokenacc-${VER}.tar.gz $HOME/rpmbuild/SOURCES/
+cp -f xrootd-alicetokenacc.spec xrootd-alicetokenacc.spec_wip
+
+sed -i "/Version:/c\Version: ${VER}" xrootd-alicetokenacc.spec_wip
+
+[[ -n "${REL}" ]] && sed -i "/Release:/c\Release: ${REL}%{?dist}" xrootd-alicetokenacc.spec_wip
+mv xrootd-alicetokenacc.spec_wip $HOME/rpmbuild/SPECS/xrootd-alicetokenacc.spec
 
 rpmbuild -ba xrootd-alicetokenacc.spec
 
